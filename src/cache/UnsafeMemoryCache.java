@@ -124,10 +124,10 @@ public class UnsafeMemoryCache implements ICache {
             int newTail = (tail + length + 7) & ~7;
 
             if (newTail > segmentSize) {
-                purgeOverlappingRegion(segment, tail, segmentSize);
                 tail = DATA_START;
                 newTail = (tail + length + 7) & ~7;
             }
+
             purgeOverlappingRegion(segment, tail, newTail);
 
             int count = segment.count;
