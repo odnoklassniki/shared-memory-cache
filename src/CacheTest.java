@@ -65,17 +65,16 @@ public class CacheTest {
         System.out.println(cacheClass + " read-write: " + (end - start));
     }
 
+
+
+
     public static void main(String[] args) throws Exception {
         String type = args.length == 0 ? null : args[0];
         ICache cache;
-        if ("ehcache".equals(type)) {
-            cache = new Ehcache(2*G);
-        } else if ("jcs".equals(type)) {
-            cache = new JCSCache("sampleCache");
-        } else if ("chm".equals(type)) {
+        if ("chm".equals(type)) {
             cache = new ConcurrentHashMapCache(3000000, 256);
         } else {
-            cache = new UnsafeMemoryCache(new MemoryCacheConfiguration(2*G, 200*K, "/dev/shm/cache-test"));
+            cache = new SharedMemoryCache(new MemoryCacheConfiguration(200*M, 200*K, "/tmp/cache-shm-test"));
         }
         testAll(cache);
         cache.close();

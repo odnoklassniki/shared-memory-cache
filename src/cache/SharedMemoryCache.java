@@ -1,16 +1,16 @@
 package cache;
+import sun.misc.Unsafe;
 
+import util.AtomicLock;
 import util.MappedFile;
 import util.JavaInternals;
 
-import sun.misc.Unsafe;
 
-import java.util.concurrent.Semaphore;
 
-public class UnsafeMemoryCache implements ICache {
+public class SharedMemoryCache implements ICache {
     private static final Unsafe unsafe = JavaInternals.getUnsafe();
     private static final int BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
-    private static final int WRITE_PERMITS = 1024;
+
 
     private static final int MAX_KEY_COUNT = 256;
     private static final int KEY_SIZE      = 8;
@@ -24,16 +24,23 @@ public class UnsafeMemoryCache implements ICache {
     private int segmentMask;
     private Segment[] segments;
 
-    static final class Segment extends Semaphore {
+    static final class Segment  {
+        public AtomicLock lock;
         final long start;
+        final long lockAddress;
         int tail;
         int count;
 
         Segment(long start, int size) {
-            super(WRITE_PERMITS, true);
-            this.start = start;
-            verify(start, size);
+            this.lockAddress = start;
+            this.lock = new AtomicLock(lockAddress);
+            this.start = start+4;
+            verify(start, size-4);
         }
+
+        public void lock() {lock.lock();}
+        public void release() {lock.unlock();}
+
 
         private void verify(long start, int size) {
             int maxTail = DATA_START;
@@ -64,7 +71,7 @@ public class UnsafeMemoryCache implements ICache {
         }
     }
 
-    public UnsafeMemoryCache(MemoryCacheConfiguration configuration) throws Exception {
+    public SharedMemoryCache(MemoryCacheConfiguration configuration) throws Exception {
         long requestedCapacity = configuration.getCapacity();
         long desiredSegmentSize = configuration.getSegmentSize();
         int segmentCount = calculateSegmentCount(requestedCapacity, desiredSegmentSize);
@@ -89,7 +96,7 @@ public class UnsafeMemoryCache implements ICache {
     @Override
     public byte[] get(long key) {
         Segment segment = segmentFor(key);
-        segment.acquireUninterruptibly();
+        segment.lock();
         try {
             long segmentStart = segment.start;
             long keysEnd = segmentStart + (segment.count << 3);
@@ -117,7 +124,7 @@ public class UnsafeMemoryCache implements ICache {
         }
 
         Segment segment = segmentFor(key);
-        segment.acquireUninterruptibly(WRITE_PERMITS);
+        segment.lock();
         try {
             long segmentStart = segment.start;
             int tail = segment.tail;
@@ -152,7 +159,7 @@ public class UnsafeMemoryCache implements ICache {
             segment.tail = newTail;
             return true;
         } finally {
-            segment.release(WRITE_PERMITS);
+            segment.release();
         }
     }
 
