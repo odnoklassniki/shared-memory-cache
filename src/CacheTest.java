@@ -11,12 +11,13 @@ public class CacheTest {
 
     private static final int WARMUP_COUNT = 100000;
     private static final int RUN_COUNT    = 1000000;
+    private static final int DATA_SIZE    = 256;
 
     public static void testWrite(ICache cache, int count) {
         Random random = new Random(0);
         for (int i = 0; i < count; i++) {
             long key = random.nextInt(1 << 20) * MAGIC;
-            cache.put(key, new byte[random.nextInt(8192)]);
+            cache.put(key, new byte[random.nextInt(DATA_SIZE)]);
         }
     }
 
@@ -33,7 +34,7 @@ public class CacheTest {
         for (int i = 0; i < count; i++) {
             long key = random.nextInt(1 << 20) * MAGIC;
             if (random.nextInt(10) == 0) {
-                cache.put(key, new byte[random.nextInt(8192)]);
+                cache.put(key, new byte[random.nextInt(DATA_SIZE)]);
             } else {
                 cache.get(key);
             }
@@ -74,7 +75,7 @@ public class CacheTest {
         if ("chm".equals(type)) {
             cache = new ConcurrentHashMapCache(3000000, 256);
         } else {
-            cache = new SharedMemoryCache(new MemoryCacheConfiguration(200*M, 200*K, "/tmp/cache-shm-test"));
+            cache = new SharedMemoryCache(new MemoryCacheConfiguration(200*M, 50*K, "/tmp/cache-shm-test"));
         }
         testAll(cache);
         cache.close();

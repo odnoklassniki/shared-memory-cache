@@ -47,8 +47,8 @@ public class CacheIPCTest {
                         classpath,
                         CacheTest.class.getName());
         Process process = processBuilder.start();
-        Random rnd = new Random(new Date().getTime() / 1000);
-        Thread.sleep(rnd.nextInt() % 1000, rnd.nextInt());
+        Random rnd = new Random(new Date().getTime());
+        Thread.sleep(rnd.nextInt(3000) + 300 );
         process.destroy();
         System.out.println("Distroyed Output:\n" + output(process.getInputStream()));
         process.waitFor();

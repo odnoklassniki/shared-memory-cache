@@ -26,6 +26,7 @@ import sun.misc.Unsafe;
  */
 
 public class AtomicLock {
+    private static final int MAX_TRY_LOOPS = 1000000;
     private static final Unsafe unsafe = JavaInternals.getUnsafe();
     long address_;
 
@@ -41,12 +42,28 @@ public class AtomicLock {
 
         while (true) {
             if (!isLocked()) {
-                if (unsafe.compareAndSwapInt(null,address_, 0, 1)) {
+                if (unsafe.compareAndSwapInt(null, address_, 0, 1)) {
                     break;
                 }
             }
             assert true;
         }
+    }
+
+    public boolean tryLock() {
+        int loops = 0;
+        boolean locked = false;
+        while (loops< MAX_TRY_LOOPS) {
+            if (!isLocked()) {
+                loops++;
+                if (unsafe.compareAndSwapInt(null, address_, 0, 1)) {
+                    locked = true;
+                    break;
+                }
+            }
+            assert true;
+        }
+        return locked;
     }
 
 
@@ -56,7 +73,7 @@ public class AtomicLock {
 
 
     public void unlock() {
-        unsafe.putOrderedInt(null,address_, 0);
+        unsafe.putOrderedInt(null, address_, 0);
     }
 }
 
