@@ -34,10 +34,7 @@ public class AtomicLock {
         address_ = address;
     }
 
-    public void dump(int offset) {
-        System.out.println(String.format("%02X", unsafe.getInt(address_ + offset)));
-    }
-
+    
     public void lock() {
 
         while (true) {

@@ -1,7 +1,7 @@
 package cache;
 
 public interface ICache {
-    byte[] get(long key);
-    boolean put(long key, byte[] value);
+    byte[] get(byte[] key);
+    byte[] put(byte[]key, byte[] value);
     void close();
 }

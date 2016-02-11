@@ -1,81 +1,94 @@
 package cache;
-import sun.misc.Unsafe;
 
-import util.AtomicLock;
 import util.MappedFile;
-import util.JavaInternals;
 
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 
 public class SharedMemoryCache implements ICache {
-    private static final Unsafe unsafe = JavaInternals.getUnsafe();
-    private static final int BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
+    public static final int KEY_SIZE = 8;
+    public static final int DATA_SIZE = 16;
+    private static final int ELEMENT_SIZE = KEY_SIZE + DATA_SIZE;
 
+    public final static int MAX_KEY_COUNT(int size) {
+        return size / ELEMENT_SIZE;
+    }
 
-    private static final int MAX_KEY_COUNT = 256;
-    private static final int KEY_SIZE      = 8;
-    private static final int KEY_SPACE     = MAX_KEY_COUNT * KEY_SIZE;
-    private static final int DATA_START    = KEY_SPACE * 2;
-    private static final int OFFSET        = KEY_SPACE + 0;
-    private static final int LENGTH        = KEY_SPACE + 4;
+    private static int dateOffset(int keyAddress) {
+        return keyAddress + KEY_SIZE;
+    }
 
     private MappedFile mmap;
     private int segmentSize;
     private int segmentMask;
     private Segment[] segments;
 
-    static final class Segment  {
-        public AtomicLock lock;
-        final long start;
-        final long lockAddress;
-        int tail;
-        int count;
+    static final class Segment {
+        int start =0;
+        int size;
+        MappedFile mmap=null;
 
-        Segment(long start, int size) {
-            this.lockAddress = start;
-            this.lock = new AtomicLock(lockAddress);
-            this.start = start+4;
-            verify(start, size-4);
+
+        Segment(int start, int size, MappedFile mmap) {
+            this.size = size ;
+            this.start = start;
+            this.mmap = mmap;
+            verify();
         }
 
-        public void lock() {lock.lock();}
-        public void release() {lock.unlock();}
+        public  int elementsSpaceSize() {
+             return size -4;
+        }
+        public int elementsSpaceOffset() {
+            return start + 4;
+        }
+        public  int countOffset(){
+            return start;
+        }
+
+        public int getCount() {
+            return  mmap.get(countOffset());
+        }
+
+        public void incCount() {
+            mmap.put(getCount() + 1, countOffset());
+        }
 
 
-        private void verify(long start, int size) {
-            int maxTail = DATA_START;
-            long prevKey = 0;
-            long pos = start;
+        private void verify() {
+            int start = elementsSpaceOffset();
+            int size = elementsSpaceSize();
+            int pos = start;
+            byte[] prevKey = new byte[KEY_SIZE];
+            byte[] key = new byte[KEY_SIZE];
 
-            for (long keysEnd = start + KEY_SPACE; pos < keysEnd; pos += KEY_SIZE) {
-                long key = unsafe.getLong(pos);
-                if (key <= prevKey) {
-                    break;
-                }
-
-                int offset = unsafe.getInt(pos + OFFSET);
-                int length = unsafe.getInt(pos + LENGTH);
-                int newTail = (offset + length + 7) & ~7;
-                if (offset < DATA_START || length < 0 || newTail > size) {
-                    break;
-                }
-
-                if (newTail > maxTail) {
-                    maxTail = newTail;
-                }
-                prevKey = key;
+            if (getCount() > MAX_KEY_COUNT(size)) {
+                throw new Error("shared cache element in position count is invalid");
             }
 
-            this.tail = maxTail;
-            this.count = (int) (pos - start) >>> 3;
+            for (int c = 0; c < getCount(); c++, pos += ELEMENT_SIZE) {
+
+                if ( mmap.compare(pos, ByteBuffer.wrap(prevKey) ) <= 0 )  {
+                    throw new Error("shared cache element in position is invalid");
+                }
+                mmap.get(prevKey,pos,KEY_SIZE);
+            }
+
+            if ( ((pos - start)/ ELEMENT_SIZE) < getCount() ) {
+                throw new Error("shared cache element in position count is invalid");
+            }
+
         }
+
+
     }
 
     public SharedMemoryCache(MemoryCacheConfiguration configuration) throws Exception {
         long requestedCapacity = configuration.getCapacity();
         long desiredSegmentSize = configuration.getSegmentSize();
-        int segmentCount = calculateSegmentCount(requestedCapacity, desiredSegmentSize);
-        long segmentSize = (requestedCapacity / segmentCount + 31) & ~31L;
+        int  segmentCount = calculateSegmentCount(requestedCapacity, desiredSegmentSize);
+        int  segmentSize = (int)((requestedCapacity / segmentCount + 31) & ~31L);
 
         this.mmap = new MappedFile(configuration.getImageFile(), segmentSize * segmentCount);
         this.segmentSize = (int) segmentSize;
@@ -83,7 +96,7 @@ public class SharedMemoryCache implements ICache {
         this.segments = new Segment[segmentCount];
 
         for (int i = 0; i < segmentCount; i++) {
-            segments[i] = new Segment(mmap.getAddr() + segmentSize * i, this.segmentSize);
+            segments[i] = new Segment(segmentSize * i, this.segmentSize,mmap);
         }
     }
 
@@ -94,79 +107,71 @@ public class SharedMemoryCache implements ICache {
     }
 
     @Override
-    public byte[] get(long key) {
-        Segment segment = segmentFor(key);
-        segment.lock();
-        try {
-            long segmentStart = segment.start;
-            long keysEnd = segmentStart + (segment.count << 3);
-            long keyAddr = binarySearch(key, segmentStart, keysEnd);
+    public byte[] get(byte[] key) {
 
-            if (keyAddr > 0) {
-                int offset = unsafe.getInt(keyAddr + OFFSET);
-                int length = unsafe.getInt(keyAddr + LENGTH);
-                byte[] result = new byte[length];
-                unsafe.copyMemory(null, segmentStart + offset, result, BYTE_ARRAY_OFFSET, length);
+        if ( key.length != KEY_SIZE) {
+            return null;
+        }
+
+        Segment segment = segmentFor(key);
+        mmap.lock();
+        try {
+            int segmentStart = segment.elementsSpaceOffset();
+            int keysEnd = segmentStart + segment.getCount() * ELEMENT_SIZE;
+            int keyOffset = binarySearch(key, segmentStart, keysEnd);
+
+            if (keyOffset > 0) {
+                int offset = dateOffset(keyOffset);
+                byte[] result = new byte[DATA_SIZE];
+                mmap.get(result, offset, DATA_SIZE);
                 return result;
             }
 
             return null;
         } finally {
-            segment.release();
+            mmap.release();
         }
     }
 
     @Override
-    public boolean put(long key, byte[] value) {
-        int length = value.length;
-        if (length >= segmentSize >> 1) {
-            return false;
+    public byte[] put(byte[] key, byte[] value) {
+        int keyOffset;
+        int keysEnd;
+        if (value.length != DATA_SIZE || key.length != KEY_SIZE) {
+            return null;
         }
 
         Segment segment = segmentFor(key);
-        segment.lock();
+        mmap.lock();
         try {
-            long segmentStart = segment.start;
-            int tail = segment.tail;
-            int newTail = (tail + length + 7) & ~7;
-
-            if (newTail > segmentSize) {
-                tail = DATA_START;
-                newTail = (tail + length + 7) & ~7;
+            int segmentStart = segment.elementsSpaceOffset();
+            int count = segment.getCount();
+            if (count >= MAX_KEY_COUNT(segment.elementsSpaceSize())) {
+                return null;
+            }
+            //mmap.dump(segment.start,100);
+            keysEnd = segmentStart + (count * ELEMENT_SIZE);
+            keyOffset = binarySearch(key, segmentStart, keysEnd);
+            if (keyOffset < 0) {
+                keyOffset = ~keyOffset;
+                mmap.copy(keyOffset, keyOffset + ELEMENT_SIZE, keysEnd - keyOffset);
+                mmap.put(key, keyOffset, KEY_SIZE);
+                segment.incCount();
             }
 
-            purgeOverlappingRegion(segment, tail, newTail);
-
-            int count = segment.count;
-            if (count == MAX_KEY_COUNT) {
-                return false;
-            }
-
-            long keysEnd = segmentStart + (count << 3);
-            long keyAddr = binarySearch(key, segmentStart, keysEnd);
-            if (keyAddr < 0) {
-                keyAddr = ~keyAddr;
-                unsafe.copyMemory(null, keyAddr, null, keyAddr + KEY_SIZE, keysEnd - keyAddr);
-                unsafe.copyMemory(null, keyAddr + KEY_SPACE, null, keyAddr + (KEY_SPACE + KEY_SIZE), keysEnd - keyAddr);
-                segment.count = count + 1;
-            }
-
-            unsafe.putLong(keyAddr, key);
-            unsafe.putInt(keyAddr + OFFSET, tail);
-            unsafe.putInt(keyAddr + LENGTH, length);
-            unsafe.copyMemory(value, BYTE_ARRAY_OFFSET, null, segmentStart + tail, length);
-
-            segment.tail = newTail;
-            return true;
+            mmap.put(value, keyOffset + KEY_SIZE, DATA_SIZE);
+            //mmap.dump(segment.start,100);
+            return key;
         } finally {
-            segment.release();
+            segment.verify();
+            mmap.release();
         }
     }
 
     public int count() {
         int count = 0;
         for (Segment segment : segments) {
-            count += segment.count;
+            count += segment.getCount();
         }
         return count;
     }
@@ -179,45 +184,32 @@ public class SharedMemoryCache implements ICache {
         return segmentCount;
     }
 
-    private Segment segmentFor(long key) {
-        return segments[((int) (key ^ (key >>> 16))) & segmentMask];
+    private Segment segmentFor(byte[] key) {
+        return segments[Arrays.hashCode(key) & segmentMask];
     }
 
-    private static long binarySearch(long key, long low, long high) {
-        for (high -= KEY_SIZE; low <= high; ) {
-            long mid = ((low + high) >>> 1) & ~7L;
-            long midVal = unsafe.getLong(mid);
+    private int binarySearch(byte[] key, int low, int high) {
+        byte[] midval = new byte[KEY_SIZE];
+        ByteBuffer kbuf = ByteBuffer.wrap(key);
 
-            if (midVal < key) {
-                low = mid + KEY_SIZE;
-            } else if (midVal > key) {
-                high = mid - KEY_SIZE;
+        for (high -= ELEMENT_SIZE; low <= high; ) {
+            int midOffset = low + (((high -low)/ ELEMENT_SIZE) >>> 1) * ELEMENT_SIZE;
+
+            mmap.get(midval,midOffset,KEY_SIZE);
+            int compare = mmap.compare(midOffset, kbuf);
+
+            if (compare < 0) {
+                low = midOffset + ELEMENT_SIZE;
+            } else if (compare > 0) {
+                high = midOffset - ELEMENT_SIZE;
             } else {
-                return mid;
+                return midOffset;
             }
         }
         return ~low;
     }
 
-    private static void purgeOverlappingRegion(Segment segment, int from, int to) {
-        long pos = segment.start + OFFSET;
-        int count = segment.count;
-        long end = pos + (count << 3);
 
-        for (long newPos = pos; pos < end; pos += KEY_SIZE) {
-            int offset = unsafe.getInt(pos);
-            if (offset >= from && offset < to) {
-                count--;
-            } else {
-                if (newPos != pos) {
-                    unsafe.putInt(newPos, offset);
-                    unsafe.putInt(newPos + 4, unsafe.getInt(pos + 4));
-                    unsafe.putLong(newPos - KEY_SPACE, unsafe.getLong(pos - KEY_SPACE));
-                }
-                newPos += KEY_SIZE;
-            }
-        }
 
-        segment.count = count;
-    }
+
 }
