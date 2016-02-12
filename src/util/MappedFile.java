@@ -37,8 +37,8 @@ public class MappedFile {
 
 
     public void copy(int srcIndex, int targetIndex, int length) {
+        map.position(0);
         for (int i = length-1; i >= 0; i--) {
-            map.position(0);
             map.put(targetIndex + i, map.get(srcIndex + i));
         }
     }
@@ -53,6 +53,25 @@ public class MappedFile {
         return map.getInt();
     }
 
+    public void putLong(long val, int index) {
+        map.position(index);
+        map.putLong(val);
+    }
+
+    public long getLong(int index) {
+        map.position(index);
+        return map.getLong();
+    }
+
+    public void putShort(short val, int index) {
+        map.position(index);
+        map.putShort(val);
+    }
+
+    public short getShort(int index) {
+        map.position(index);
+        return map.getShort();
+    }
 
     public void close() {
         try {
