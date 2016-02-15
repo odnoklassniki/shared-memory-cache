@@ -17,8 +17,11 @@ public class CacheTest {
 
 
     public static void testWrite(ICache cache, int count) {
+        Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            byte[] key = Arrays.copyOfRange(UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            //byte[] key = Arrays.copyOfRange(UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            //byte[] key = { 1,1,1,1,1,1,1,1 };
             cache.put(key, new byte[SharedMemoryCache.DATA_SIZE]);
         }
     }
@@ -26,15 +29,17 @@ public class CacheTest {
     public static void testRead(ICache cache, int count) {
         Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+           // byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             cache.get(key);
         }
     }
 
     public static void testRead9Write1(ICache cache, int count) {
-        Random random = new Random(2);
+        Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            // byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             if (random.nextInt(10) == 0) {
                 cache.put(key, new byte[random.nextInt(SharedMemoryCache.DATA_SIZE)]);
             } else {

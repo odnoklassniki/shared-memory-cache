@@ -101,11 +101,14 @@ public class MappedFile {
 
     }
 
-    public int compare(int index, ByteBuffer buffer) {
+    public int compare(int index, int length, ByteBuffer buffer) {
         map.position(index);
+        int oldLimit = map.limit();
+        map.limit(index+length);
         map.mark();
         int result = map.compareTo(buffer);
         map.reset();
+        map.limit(oldLimit);
         return result;
     }
 
