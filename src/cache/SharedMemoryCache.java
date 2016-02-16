@@ -4,6 +4,7 @@ import util.MappedFile;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Date;
 
 
 public class SharedMemoryCache implements ICache {
@@ -15,9 +16,10 @@ public class SharedMemoryCache implements ICache {
     private Segment[] segments;
 
     // FILE HEADER STRUCTURE
+    public static final int LINK_SIZE = Integer.SIZE/8;
     public static final int TOTAL_SIZE_OFFSET = 0;
-    public static final int LRU_HEAD_OFFSET = TOTAL_SIZE_OFFSET + 8;
-    public static final int HEADER_SIZE = LRU_HEAD_OFFSET + 4;
+    public static final int LRU_HEAD_OFFSET = TOTAL_SIZE_OFFSET + Long.SIZE/8;
+    public static final int HEADER_SIZE = LRU_HEAD_OFFSET + LINK_SIZE;
 
     private long getTotal() {
         return mmap.getLong(TOTAL_SIZE_OFFSET);
@@ -32,7 +34,6 @@ public class SharedMemoryCache implements ICache {
     // HASH ELEMENT STRUCTURE
     public static final int KEY_REF_SIZE = Short.SIZE/8;
     public static final int KEY_SIZE = 8;
-    public static final int LINK_SIZE = Integer.SIZE/8;
     public static final int DATA_SIZE = CacheMetaInfo.DataSize ;
     private static final int ELEMENT_SIZE = LINK_SIZE*2 + KEY_SIZE + DATA_SIZE;
 
@@ -41,22 +42,25 @@ public class SharedMemoryCache implements ICache {
     static final class CacheMetaInfo {
 
         ByteBuffer bytes_;
+        Date d_;
 
         public static final int activateOffset = 0;
         public static final int sizeOffset = 1;
         public static final int timeOffset = Long.SIZE/8 + 1;
         public static final int DataSize = Long.SIZE/8 + Long.SIZE/8 + 1;
 
+
         CacheMetaInfo(ByteBuffer bytes) {
             bytes_ = bytes;
+            d_ = new Date();
         }
 
-        CacheMetaInfo(byte activate, long size, long timestamp) {
+        CacheMetaInfo(byte activate, long size) {
             bytes_ = ByteBuffer.allocate(DataSize);
             bytes_.put(activate);
-            bytes_.putLong(timestamp);
+            bytes_.putLong(0);
             bytes_.putLong(size);
-
+            d_ = new Date();
         }
 
         public byte[] bytes() { return bytes_.array(); }
@@ -72,6 +76,11 @@ public class SharedMemoryCache implements ICache {
             bytes_.reset();
             return val;
         }
+
+        public void setTimestamp() {
+            bytes_.putLong(timeOffset, d_.getTime());
+        }
+
 
         public long size() {
             bytes_.position(sizeOffset);
@@ -147,10 +156,15 @@ public class SharedMemoryCache implements ICache {
         private static int dataOffset(int keyOffset) {
             return  keyOffset + KEY_SIZE + 2*LINK_SIZE ;
         }
-
+        private  CacheMetaInfo data(int keyOffset) {
+            byte[] data = new byte[DATA_SIZE];
+            mmap.get(data, dataOffset(keyOffset),DATA_SIZE) ;
+            return new CacheMetaInfo(ByteBuffer.wrap(data));
+        }
         private int dataOffset(short ref) {
             return  dataOffset(keyOffset(ref)) ;
         }
+
 
 
 
@@ -237,9 +251,9 @@ public class SharedMemoryCache implements ICache {
         }
 
         CacheMetaInfo v = new  CacheMetaInfo(ByteBuffer.wrap(value));
-
         Segment segment = segmentFor(key);
         mmap.lock();
+        v.setTimestamp();
         try {
             int segmentStart = segment.elementsSpaceOffset();
 
@@ -292,6 +306,11 @@ public class SharedMemoryCache implements ICache {
         return segments[Arrays.hashCode(key) & segmentMask];
     }
 
+    private Segment segmentFor(int keyOffset) {
+         int index = (keyOffset -HEADER_SIZE)/segmentSize;
+         return segments[index];
+    }
+
     private int binarySearch(byte[] key, int low, int high, Segment seg) {
         byte[] midval = new byte[KEY_SIZE];
         ByteBuffer kbuf = ByteBuffer.wrap(key);
@@ -325,15 +344,19 @@ public class SharedMemoryCache implements ICache {
 
     private void removeLink(int headLinkOffest, int keyOffset) {
         int oldKeyOffset = mmap.get(Segment.oldLinkOffset(keyOffset));
-        if (oldKeyOffset > 0) {
-            int newKeyOffset = mmap.get(Segment.newLinkOffset(keyOffset));
-            int headKeyOffset = mmap.get(headLinkOffest);
-            if (keyOffset == headKeyOffset) {
+        int newKeyOffset = mmap.get(Segment.newLinkOffset(keyOffset));
+        int headKeyOffset = mmap.get(headLinkOffest);
+        if (keyOffset == headKeyOffset) {
+            if (oldKeyOffset > 0) {
                 mmap.put(headKeyOffset, Segment.newLinkOffset(oldKeyOffset));
-                mmap.put(oldKeyOffset, headLinkOffest );
-            } else {
+            }
+            mmap.put(oldKeyOffset, headLinkOffest);
+        } else {
+            if (oldKeyOffset > 0) {
                 mmap.put(newKeyOffset, Segment.newLinkOffset(oldKeyOffset));
-                mmap.put(oldKeyOffset, Segment.oldLinkOffset(newKeyOffset) );
+            }
+            if (newKeyOffset > 0) {
+                mmap.put(oldKeyOffset, Segment.oldLinkOffset(newKeyOffset));
             }
         }
         mmap.put(0, Segment.oldLinkOffset(keyOffset));
@@ -363,12 +386,30 @@ public class SharedMemoryCache implements ICache {
 
     private void verifyLRU() {
         int keyOffset = LRU_HEAD_OFFSET;
+        int prevKeyOffset;
         int count = 0;
-        while ( (keyOffset = prev(keyOffset)) > 0) {
-         count++;
+        long totalSize = 0;
+        Segment seg;
+        CacheMetaInfo info = new CacheMetaInfo((byte)0,0L); info.setTimestamp();
+        CacheMetaInfo prevInfo;
+        while ((prevKeyOffset = prev(keyOffset)) > 0) {
+            seg = segmentFor(prevKeyOffset);
+            prevInfo = seg.data(prevKeyOffset);
+            if (info.timestamp() < prevInfo.timestamp()) {
+                throw new Error("shared cache - keys timestamp do not match");
+            }
+            count++;
+            totalSize += info.size();
+            info = prevInfo;
+            keyOffset = prevKeyOffset;
+
         }
         if (count != this.count()) {
             throw new Error("shared cache - not all keys are linked");
+        }
+
+        if (totalSize != this.getTotal()) {
+            throw new Error("shared cache - total size do not match");
         }
     }
 
