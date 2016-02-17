@@ -1,7 +1,7 @@
 package cache;
 
 public interface ICache {
-    byte[] get(byte[] key);
-    byte[] put(byte[]key, byte[] value);
+    SharedMemoryCache.CacheMetaInfo get(byte[] key);
+    SharedMemoryCache.CacheMetaInfo put(byte[]key, SharedMemoryCache.CacheMetaInfo value);
     void close();
 }

@@ -11,8 +11,10 @@ public class CacheTest {
 
     private static final long MAGIC = 54331;
 
-    private static final int WARMUP_COUNT = 100;
-    private static final int RUN_COUNT    = 1000;
+    private static final int  WARMUP_COUNT = 100;
+    private static final int  RUN_COUNT    = 1000;
+    private static final long CACHE_LIMIT  = 10*M ;
+    private static final long DATA_VALUE_SIZE  = (CACHE_LIMIT / RUN_COUNT)*4;
 
 
 
@@ -21,8 +23,7 @@ public class CacheTest {
         for (int i = 0; i < count; i++) {
             //byte[] key = Arrays.copyOfRange(UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
-            //byte[] key = { 1,1,1,1,1,1,1,1 };
-            cache.put(key, new byte[SharedMemoryCache.DATA_SIZE]);
+            cache.put(key, new SharedMemoryCache.CacheMetaInfo((byte)0,DATA_VALUE_SIZE));
         }
     }
 
@@ -41,7 +42,7 @@ public class CacheTest {
             byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             // byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             if (random.nextInt(10) == 0) {
-                cache.put(key, new byte[random.nextInt(SharedMemoryCache.DATA_SIZE)]);
+                cache.put(key,new SharedMemoryCache.CacheMetaInfo((byte)0,DATA_VALUE_SIZE));
             } else {
                 cache.get(key);
             }
@@ -82,7 +83,7 @@ public class CacheTest {
         if ("chm".equals(type)) {
             cache = new ConcurrentHashMapCache(3000000, 256);
         } else {
-            cache = new SharedMemoryCache(new MemoryCacheConfiguration(100*K, 10*K, "/tmp/cache-shm-test"));
+            cache = new SharedMemoryCache(new MemoryCacheConfiguration(100*K, 10*K, CACHE_LIMIT, "/tmp/cache-shm-test"));
         }
         testAll(cache);
         cache.close();

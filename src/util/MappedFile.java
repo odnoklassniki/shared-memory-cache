@@ -38,8 +38,22 @@ public class MappedFile {
 
     public void copy(int srcIndex, int targetIndex, int length) {
         map.position(0);
-        for (int i = length-1; i >= 0; i--) {
-            map.put(targetIndex + i, map.get(srcIndex + i));
+        if (srcIndex < targetIndex ) {
+            for (int i = length - 1; i >= 0; i--) {
+                map.put(targetIndex + i, map.get(srcIndex + i));
+            }
+        } else {
+            for (int i = 0; i < length; i++) {
+                map.put(targetIndex + i, map.get(srcIndex + i));
+            }
+        }
+    }
+
+
+    public void clear(int index, int length) {
+        map.position(0);
+        for (int i = 0; i <length; i++) {
+            map.put(index + i, (byte)0);
         }
     }
 
@@ -52,6 +66,17 @@ public class MappedFile {
         map.position(index);
         return map.getInt();
     }
+
+    public void putByte(byte val, int index) {
+        map.position(index);
+        map.put(val);
+    }
+
+    public int getByte(int index) {
+        map.position(index);
+        return map.get();
+    }
+
 
     public void putLong(long val, int index) {
         map.position(index);
