@@ -1,6 +1,8 @@
 import cache.*;
 
 import java.util.Random;
+import java.util.UUID;
+import java.util.Arrays;
 
 public class CacheTest {
     private static final long K = 1024;
@@ -9,31 +11,38 @@ public class CacheTest {
 
     private static final long MAGIC = 54331;
 
-    private static final int WARMUP_COUNT = 100000;
-    private static final int RUN_COUNT    = 1000000;
+    private static final int  WARMUP_COUNT = 100;
+    private static final int  RUN_COUNT    = 1000;
+    private static final long CACHE_LIMIT  = 10*M ;
+    private static final long DATA_VALUE_SIZE  = (CACHE_LIMIT / RUN_COUNT)*4;
+
+
 
     public static void testWrite(ICache cache, int count) {
-        Random random = new Random(0);
+        Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            long key = random.nextInt(1 << 20) * MAGIC;
-            cache.put(key, new byte[random.nextInt(8192)]);
+            //byte[] key = Arrays.copyOfRange(UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            cache.put(key, new SharedMemoryCache.CacheMetaInfo((byte)0,DATA_VALUE_SIZE));
         }
     }
 
     public static void testRead(ICache cache, int count) {
         Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            long key = random.nextInt(1 << 20) * MAGIC;
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+           // byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             cache.get(key);
         }
     }
 
     public static void testRead9Write1(ICache cache, int count) {
-        Random random = new Random(2);
+        Random random = new Random(1);
         for (int i = 0; i < count; i++) {
-            long key = random.nextInt(1 << 20) * MAGIC;
+            byte[] key = Arrays.copyOfRange(Long.toHexString(((random.nextInt() % RUN_COUNT) << 20) * MAGIC).intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
+            // byte[] key = Arrays.copyOfRange( UUID.randomUUID().toString().intern().getBytes(), 0, SharedMemoryCache.KEY_SIZE);
             if (random.nextInt(10) == 0) {
-                cache.put(key, new byte[random.nextInt(8192)]);
+                cache.put(key,new SharedMemoryCache.CacheMetaInfo((byte)0,DATA_VALUE_SIZE));
             } else {
                 cache.get(key);
             }
@@ -65,17 +74,16 @@ public class CacheTest {
         System.out.println(cacheClass + " read-write: " + (end - start));
     }
 
+
+
+
     public static void main(String[] args) throws Exception {
         String type = args.length == 0 ? null : args[0];
         ICache cache;
-        if ("ehcache".equals(type)) {
-            cache = new Ehcache(2*G);
-        } else if ("jcs".equals(type)) {
-            cache = new JCSCache("sampleCache");
-        } else if ("chm".equals(type)) {
+        if ("chm".equals(type)) {
             cache = new ConcurrentHashMapCache(3000000, 256);
         } else {
-            cache = new UnsafeMemoryCache(new MemoryCacheConfiguration(2*G, 200*K, "/dev/shm/cache-test"));
+            cache = new SharedMemoryCache(new MemoryCacheConfiguration(100*K, 10*K, CACHE_LIMIT, "/tmp/cache-shm-test"));
         }
         testAll(cache);
         cache.close();
