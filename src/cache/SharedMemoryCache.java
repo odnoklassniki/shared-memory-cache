@@ -22,7 +22,8 @@ public class SharedMemoryCache implements ICache {
     public static final int TOTAL_SIZE_OFFSET = 0;
     public static final int LIMIT_SIZE_OFFSET = TOTAL_SIZE_OFFSET + Long.SIZE/8;
     public static final int LRU_HEAD_OFFSET   = LIMIT_SIZE_OFFSET + Long.SIZE/8;
-    public static final int HEADER_SIZE       = LRU_HEAD_OFFSET   + LINK_SIZE;
+    public static final int LRU_TAIL_OFFSET   = LRU_HEAD_OFFSET   + Long.SIZE/8;
+    public static final int HEADER_SIZE       = LRU_TAIL_OFFSET   + LINK_SIZE;
 
     private long getTotal() {
         return mmap.getLong(TOTAL_SIZE_OFFSET);
@@ -46,14 +47,13 @@ public class SharedMemoryCache implements ICache {
     public static final int KEY_REF_SIZE = Short.SIZE/8;
     public static final int KEY_SIZE = 8;
     public static final int DATA_SIZE = CacheMetaInfo.DataSize ;
-    private static final int ELEMENT_SIZE = KEY_SIZE+  LINK_SIZE*2 + KEY_REF_SIZE + DATA_SIZE;
+    private static final int ELEMENT_SIZE = KEY_SIZE+  LINK_SIZE*2 + DATA_SIZE;
 
 
 
     public static final class CacheMetaInfo {
 
         ByteBuffer bytes_;
-        Date d_;
 
         public static final int activateOffset = 0;
         public static final int sizeOffset = 1;
@@ -63,7 +63,6 @@ public class SharedMemoryCache implements ICache {
 
         public CacheMetaInfo(ByteBuffer bytes) {
             bytes_ = bytes;
-            d_ = new Date();
         }
 
         public CacheMetaInfo(byte activate, long size) {
@@ -71,7 +70,6 @@ public class SharedMemoryCache implements ICache {
             bytes_.put(activate);
             bytes_.putLong(size);
             bytes_.putLong(0);
-            d_ = new Date();
         }
 
         public byte[] bytes() { return bytes_.array(); }
@@ -89,7 +87,7 @@ public class SharedMemoryCache implements ICache {
         }
 
         public void setTimestamp() {
-            bytes_.putLong(timeOffset, d_.getTime());
+            bytes_.putLong(timeOffset, System.nanoTime());
         }
 
 
@@ -147,6 +145,10 @@ public class SharedMemoryCache implements ICache {
             mmap.putShort((short)(getCount()-1), countOffset());
         }
 
+        public void clear() {
+            mmap.putShort((short)0, countOffset());
+        }
+
 
         public final int maxKeyCount() {
             int numOfElements = elementsSpaceSize() / (ELEMENT_SIZE + KEY_REF_SIZE);
@@ -172,12 +174,9 @@ public class SharedMemoryCache implements ICache {
             return  keyOffset + KEY_SIZE + LINK_SIZE ;
         }
 
-        private static int ref(int keyOffset) {
-            return  keyOffset + KEY_SIZE + 2*LINK_SIZE ;
-        }
 
         private static int dataOffset(int keyOffset) {
-            return  keyOffset + KEY_SIZE + 2*LINK_SIZE + KEY_REF_SIZE;
+            return  keyOffset + KEY_SIZE + 2*LINK_SIZE ;
         }
 
         private  boolean active(int keyOffset) {
@@ -247,6 +246,7 @@ public class SharedMemoryCache implements ICache {
 
             return true;
         }
+
     }
 
     public SharedMemoryCache(MemoryCacheConfiguration configuration) throws Exception {
@@ -306,7 +306,7 @@ public class SharedMemoryCache implements ICache {
     }
 
 
-    public int getKeyOffset(byte[] key) {
+    private int getKeyOffset(byte[] key) {
         int keyOffset = 0;
         Segment segment = segmentFor(key);
         int keyRefOffset = segment.binarySearch(key);
@@ -338,10 +338,25 @@ public class SharedMemoryCache implements ICache {
     }
 
 
+    public boolean verifyOrClear() {
+        boolean verified = true;
+        mmap.lock();
+        try {
+          if (!verify()) {
+              clear();
+              verified = false;
+          }
+        } finally {
+            mmap.release();
+        }
+        return verified;
+    }
+
+
     public void delete(int keyOffset) {
         Segment segment = segmentFor(keyOffset);
         mmap.get(aKey,keyOffset,KEY_SIZE);
-        removeLink(LRU_HEAD_OFFSET, keyOffset);
+        removeLink(keyOffset);
         updateTotal(-1*mmap.getLong(segment.dataOffset(keyOffset)+CacheMetaInfo.sizeOffset));
         int keyRefOffset = segment.binarySearch(aKey);
         if ( keyOffset < 0 ) {
@@ -355,13 +370,23 @@ public class SharedMemoryCache implements ICache {
         segment.decCount();
     }
 
+    public void clear() {
+        mmap.put(0, LRU_HEAD_OFFSET);
+        mmap.put(0, LRU_HEAD_OFFSET);
+        mmap.putLong(0L, TOTAL_SIZE_OFFSET);
+        for (Segment segment : segments) {
+            segment.clear();
+        }
+    }
+
+
     public boolean needEviction(long newSize) {  return (this.getTotal() + newSize - this.getLimit()) > 0; }
 
     public boolean evict(long newSize) {
-        int keyOffset = LRU_HEAD_OFFSET;
+        int keyOffset = LRU_TAIL_OFFSET;
         Segment seg;
 
-        while (needEviction(newSize) && (keyOffset = prev(keyOffset)) > 0) {
+        while (needEviction(newSize) && (keyOffset = next(keyOffset)) > 0) {
             seg = segmentFor(keyOffset);
             if (!seg.active(keyOffset)) {
                 delete(keyOffset);
@@ -409,19 +434,24 @@ public class SharedMemoryCache implements ICache {
                 mmap.putShort(newRef,keyRefOffset);
                 keyOffset = segment.keyOffset(newRef);
                 mmap.put(key, keyOffset, KEY_SIZE);
-                mmap.putShort(newRef,segment.ref(keyOffset));
+                mmap.put(0, Segment.oldLinkOffset(keyOffset));
+                mmap.put(0, Segment.newLinkOffset(keyOffset));
                 updateTotal(value.size());
                 segment.incCount();
             }
             short ref = mmap.getShort(keyRefOffset);
             mmap.put(value.bytes(), segment.dataOffset(ref),DATA_SIZE);
-            moveToHead(LRU_HEAD_OFFSET, ref, segment);
+            moveToHead(ref, segment);
          //   mmap.dump(segment.start,100);
-            return value;
         } finally {
-            verify();
+            if (!verify()) {
+                mmap.release();
+                return null;
+            }
             mmap.release();
         }
+
+        return value;
     }
 
 
@@ -452,25 +482,35 @@ public class SharedMemoryCache implements ICache {
 
 
 
-    private int prev(int offset ){
-        if (offset == LRU_HEAD_OFFSET ) {
+    private int next(int offset){
+        if (offset == LRU_TAIL_OFFSET) {
            return  mmap.get(offset);
         }
         else {
-            return mmap.get(Segment.oldLinkOffset(offset));
+            return mmap.get(Segment.newLinkOffset(offset));
         }
     }
 
-    private void removeLink(int headLinkOffest, int keyOffset) {
+    private void removeLink(int keyOffset) {
         int oldKeyOffset = mmap.get(Segment.oldLinkOffset(keyOffset));
         int newKeyOffset = mmap.get(Segment.newLinkOffset(keyOffset));
-        int headKeyOffset = mmap.get(headLinkOffest);
+        int tailKeyOffset = mmap.get(LRU_TAIL_OFFSET);
+        int headKeyOffset = mmap.get(LRU_HEAD_OFFSET);
         if (keyOffset == headKeyOffset) {
             if (oldKeyOffset > 0) {
                 mmap.put(headKeyOffset, Segment.newLinkOffset(oldKeyOffset));
             }
-            mmap.put(oldKeyOffset, headLinkOffest);
-        } else {
+            mmap.put(oldKeyOffset, LRU_HEAD_OFFSET);
+        }
+
+        if (keyOffset == tailKeyOffset) {
+            if (newKeyOffset > 0) {
+                mmap.put(tailKeyOffset, Segment.oldLinkOffset(newKeyOffset));
+            }
+            mmap.put(newKeyOffset, LRU_TAIL_OFFSET);
+        }
+
+        if ( !(keyOffset == tailKeyOffset || keyOffset == headKeyOffset) ) {
             if (oldKeyOffset > 0) {
                 mmap.put(newKeyOffset, Segment.newLinkOffset(oldKeyOffset));
             }
@@ -483,46 +523,54 @@ public class SharedMemoryCache implements ICache {
     }
 
 
-    private void updateHead(int headLinkOffest, int keyOffset) {
-        int headKeyOffset = mmap.get(headLinkOffest);
+    private void updateHead(int keyOffset) {
+        int headKeyOffset = mmap.get(LRU_HEAD_OFFSET);
         if (keyOffset != headKeyOffset) {
             if (headKeyOffset > 0) {
                 mmap.put(keyOffset, Segment.newLinkOffset(headKeyOffset));
                 mmap.put(headKeyOffset, Segment.oldLinkOffset(keyOffset));
             }
-            mmap.put(keyOffset, headLinkOffest);
+            mmap.put(keyOffset, LRU_HEAD_OFFSET);
         }
     }
 
-    private void moveToHead(int headLinkOffest, short ref, Segment seg) {
-        int keyOffset = seg.keyOffset(ref);
-        if (keyOffset != mmap.get(headLinkOffest)) {
-            removeLink(headLinkOffest, keyOffset);
-            updateHead(headLinkOffest, keyOffset);
+    private void updateEmptyTail(int keyOffset) {
+        int tailKeyOffset = mmap.get(LRU_TAIL_OFFSET);
+        if (tailKeyOffset == 0) {
+            mmap.put(keyOffset, LRU_TAIL_OFFSET);
         }
+    }
+
+    private void moveToHead(short ref, Segment seg) {
+        int keyOffset = seg.keyOffset(ref);
+        if (keyOffset != mmap.get(LRU_HEAD_OFFSET)) {
+            removeLink(keyOffset);
+            updateHead(keyOffset);
+        }
+        updateEmptyTail(keyOffset);
     }
 
 
     private boolean verify() {
-        int keyOffset = LRU_HEAD_OFFSET;
-        int prevKeyOffset;
+        int keyOffset = LRU_TAIL_OFFSET;
+        int nextKeyOffset;
         int count = 0;
         long totalSize = 0;
         Segment seg;
-        CacheMetaInfo info = new CacheMetaInfo((byte)0,0L); info.setTimestamp();
-        CacheMetaInfo prevInfo;
+        CacheMetaInfo info = new CacheMetaInfo((byte)0,0L);
+        CacheMetaInfo nextInfo;
 
         try {
-            while ((prevKeyOffset = prev(keyOffset)) > 0) {
-                seg = segmentFor(prevKeyOffset);
-                prevInfo = seg.data(prevKeyOffset);
-                if (info.timestamp() < prevInfo.timestamp()) {
+            while ((nextKeyOffset = next(keyOffset)) > 0) {
+                seg = segmentFor(nextKeyOffset);
+                nextInfo = seg.data(nextKeyOffset);
+                if (info.timestamp() > nextInfo.timestamp()) {
                     return false;
                 }
                 count++;
-                info = prevInfo;
+                info = nextInfo;
                 totalSize += info.size();
-                keyOffset = prevKeyOffset;
+                keyOffset = nextKeyOffset;
 
             }
             if (count != this.count()) {
